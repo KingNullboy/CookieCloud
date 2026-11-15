@@ -1,0 +1,16 @@
+{
+  "name": "cookie-cloud",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hostable Cookie Cloud API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@mongodb-js/zstd": "^2.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}

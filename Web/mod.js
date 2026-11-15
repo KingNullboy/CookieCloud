@@ -176,7 +176,7 @@
 
 					const result = await this.uploadSnapshot(
 						localSave,
-						null
+						0
 					);
 
 					this.revision = result.revision;

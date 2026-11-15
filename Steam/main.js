@@ -1,5 +1,7 @@
+// can i has a cookie
 const CookieCloud = {
-	api: 'https://nullweb.org/api/cookie',
+	// Configuration
+	api: localStorage.getItem('CookieCloudServer') || null,
 	token: localStorage.getItem('CookieCloudToken') || null,
 
 	revision: null,
@@ -16,8 +18,9 @@ const CookieCloud = {
 	// API communication
 	async request(endpoint, options = {}) {
 		console.log('[Cookie Cloud] API request:', endpoint);
-		if (!this.token) {
-			throw new Error('No API token configured.');
+
+		if (!this.token || !this.api) {
+			throw new Error('Cookie Cloud is not configured.');
 		}
 
 		const response = await fetch(this.api + endpoint, {
@@ -55,24 +58,85 @@ const CookieCloud = {
 	},
 
 	// Token validation and setup
-	async connect(token) {
+	async connect(server, token) {
+		server = server.trim().replace(/\/+$/, '');
 		token = token.trim();
+
+		if (!/^https?:\/\/[^/]+$/i.test(server)) {
+			throw new Error('Invalid Cookie Cloud server URL.');
+		}
+
+		if (location.protocol === 'https:' &&
+			server.startsWith('http://')) {
+			throw new Error(
+				'HTTPS pages cannot connect to HTTP Cookie Cloud servers.'
+			);
+		}
 
 		if (!/^nwc_[A-Za-z0-9_-]+$/.test(token)) {
 			throw new Error('Invalid Cookie Cloud token format.');
 		}
 
+		const previousServer = this.api;
 		const previousToken = this.token;
+
+		const previousState = {
+			revision: this.revision,
+			exists: this.exists,
+			ready: this.ready,
+			startupChecked: this.startupChecked
+		};
+
+		// Stop pending uploads to the previous server.
+		clearTimeout(this.uploadTimer);
+		this.uploadTimer = null;
+		this.pendingSave = null;
+
+		this.ready = false;
+		this.startupChecked = false;
+		this.revision = null;
+		this.exists = false;
+
+		this.api = server + '/api/cookie';
 		this.token = token;
 
 		try {
 			await this.refreshStatus();
 
+			localStorage.setItem('CookieCloudServer', server);
 			localStorage.setItem('CookieCloudToken', token);
+
+			console.log('[Cookie Cloud] Connected to:', server);
 		} catch (error) {
+			this.api = previousServer;
 			this.token = previousToken;
+
+			Object.assign(this, previousState);
+
 			throw error;
 		}
+	},
+
+	// Disconnect
+	disconnect() {
+		clearTimeout(this.uploadTimer);
+
+		this.uploadTimer = null;
+		this.pendingSave = null;
+
+		this.api = null;
+		this.token = null;
+
+		this.revision = null;
+		this.exists = false;
+
+		this.ready = false;
+		this.startupChecked = false;
+
+		localStorage.removeItem('CookieCloudServer');
+		localStorage.removeItem('CookieCloudToken');
+
+		console.log('[Cookie Cloud] Disconnected.');
 	},
 
 	// Get current cloud save information
@@ -122,16 +186,16 @@ const CookieCloud = {
 	},
 
 	// Initial synchronization
-
 	async startupSync() {
 		console.log('[Cookie Cloud] startupSync called');
 
 		console.log('[Cookie Cloud] Flags:', {
 			startupChecked: this.startupChecked,
-			token: !!this.token
+			token: !!this.token,
+			server: this.api
 		});
 
-		if (this.startupChecked || !this.token) {
+		if (this.startupChecked || !this.token || !this.api) {
 			console.log('[Cookie Cloud] Startup sync skipped.');
 			return;
 		}
@@ -174,7 +238,7 @@ const CookieCloud = {
 
 				const result = await this.uploadSnapshot(
 					localSave,
-					null
+					0
 				);
 
 				this.revision = result.revision;
@@ -208,6 +272,7 @@ const CookieCloud = {
 			this.ready = false;
 		}
 	},
+
 	// Schedule a debounced cloud upload
 	scheduleUpload() {
 		if (!this.ready || this.loadingCloud) return;
@@ -268,7 +333,7 @@ const CookieCloud = {
 		} finally {
 			this.uploading = false;
 
-			// Process a save that arrived while the previous upload was running.
+			// Process a save that arrived while uploading.
 			if (this.pendingSave !== null && this.ready) {
 				this.processQueue();
 			}
@@ -279,7 +344,6 @@ const CookieCloud = {
 	async resolveConflict(localSave) {
 		console.warn('[Cookie Cloud] Revision conflict detected.');
 
-		// Get the latest cloud version.
 		const cloud = await this.request('/save');
 
 		const overwrite = confirm(
@@ -292,7 +356,6 @@ const CookieCloud = {
 		);
 
 		if (overwrite) {
-			// Try again using the latest cloud revision.
 			const result = await this.uploadSnapshot(
 				localSave,
 				cloud.revision
@@ -306,8 +369,7 @@ const CookieCloud = {
 				this.revision
 			);
 		} else {
-			// Discard queued local snapshots so they cannot overwrite
-			// the cloud save immediately after loading it.
+			// Discard queued local snapshots.
 			this.pendingSave = null;
 
 			await this.loadCloudSave(
@@ -356,7 +418,6 @@ const CookieCloud = {
 				!CookieCloud.startupChecked &&
 				!waitingForSteamSave
 			) {
-
 				// Let Cookie Clicker finish applying the local save first.
 				setTimeout(() => {
 					CookieCloud.startupSync();
@@ -371,10 +432,20 @@ const CookieCloud = {
 	async init() {
 		console.log('[Cookie Cloud] Initializing.');
 
-		if (!this.token) {
-			const token = prompt(
+		if (!this.token || !this.api) {
+			const server = prompt(
 				'Welcome to Cookie Cloud!\n\n' +
-				'Enter your NullWeb API token:'
+				'Enter your Cookie Cloud server URL:\n\n' +
+				'Example: https://nullweb.org'
+			);
+
+			if (!server) {
+				console.log('[Cookie Cloud] Setup skipped.');
+				return;
+			}
+
+			const token = prompt(
+				'Enter your Cookie Cloud API token:'
 			);
 
 			if (!token) {
@@ -383,7 +454,7 @@ const CookieCloud = {
 			}
 
 			try {
-				await this.connect(token);
+				await this.connect(server, token);
 			} catch (error) {
 				alert(
 					'Cookie Cloud could not connect:\n\n' +
@@ -421,4 +492,4 @@ Game.registerMod('KingNullboy Cookie Cloud', {
 	},
 
 	load: function (str) { }
-});
+});0
