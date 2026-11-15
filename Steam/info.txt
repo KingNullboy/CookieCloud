@@ -1,0 +1,12 @@
+{
+    "Name": "Cookie Cloud",
+    "ID": "KingNullboy Cookie Cloud",
+    "Author": "KingNullboy",
+    "Description": "Automatic cloud save synchronization through NullWeb.",
+    "ModVersion": 2,
+    "GameVersion": 2.052,
+    "Date": "14/11/2026",
+    "Dependencies": [],
+    "Disabled": 0,
+    "AllowSteamAchievs": 1
+}
