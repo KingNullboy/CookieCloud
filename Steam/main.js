@@ -1,4 +1,3 @@
-
 // can i has a cookie
 const CookieCloud = {
 	// Configuration
@@ -69,6 +68,55 @@ const CookieCloud = {
 		return data;
 	},
 
+	// Save version conversion
+	convertSaveVersion(saveData, version) {
+		if (typeof saveData !== 'string' || !saveData.length) {
+			throw new Error('Invalid save data.');
+		}
+
+		// Decode Cookie Clicker's exported save
+		const unescaped = unescape(saveData);
+		const base64 = unescaped.split('!END!')[0];
+
+		if (!base64) {
+			throw new Error('Invalid save encoding.');
+		}
+
+		const binary = atob(base64);
+
+		const bytes = Uint8Array.from(
+			binary,
+			char => char.charCodeAt(0)
+		);
+
+		const decoded = new TextDecoder('utf-8').decode(bytes);
+
+		// Replace only the first field (game version)
+		const separator = decoded.indexOf('|');
+
+		if (separator === -1) {
+			throw new Error('Invalid save structure.');
+		}
+
+		const updated = version + decoded.slice(separator);
+
+		// Encode UTF-8 back into Base64
+		const encodedBytes = new TextEncoder().encode(updated);
+
+		let encodedBinary = '';
+
+		for (let i = 0; i < encodedBytes.length; i += 0x8000) {
+			encodedBinary += String.fromCharCode(
+				...encodedBytes.subarray(i, i + 0x8000)
+			);
+		}
+
+		const encoded = btoa(encodedBinary);
+
+		// Restore Cookie Clicker's export format
+		return escape(encoded + '!END!');
+	},
+
 	// Notifications
 	notify(title, message, icon = [2, 3]) {
 		if (typeof Game.Notify === 'function') {
@@ -137,7 +185,7 @@ const CookieCloud = {
 
 			this.notify(
 				'Cookie Cloud',
-			   'Successfully connected!'
+				'Successfully connected!'
 			);
 
 			this.startupSync();
@@ -200,7 +248,8 @@ const CookieCloud = {
 			);
 		}
 
-		return save;
+		// Steam 2.053 -> Cloud 2.058
+		return this.convertSaveVersion(save, '2.058');
 	},
 
 	// Upload save
@@ -219,6 +268,12 @@ const CookieCloud = {
 		this.loadingCloud = true;
 
 		try {
+			// Cloud 2.058 -> Steam 2.053
+			saveData = this.convertSaveVersion(
+				saveData,
+				'2.053'
+			);
+
 			Game.LoadSave(saveData);
 		} finally {
 			this.loadingCloud = false;
@@ -259,7 +314,7 @@ const CookieCloud = {
 
 				this.notify(
 					'Cookie Cloud',
-				'Cloud save loaded successfully!'
+					'Cloud save loaded successfully!'
 				);
 			} else {
 				console.log('[Cookie Cloud] No cloud save found.');
@@ -276,7 +331,7 @@ const CookieCloud = {
 
 				this.notify(
 					'Cookie Cloud',
-				'Cloud save created successfully!'
+					'Cloud save created successfully!'
 				);
 			}
 
@@ -286,7 +341,7 @@ const CookieCloud = {
 		} catch (error) {
 			console.error(
 				'[Cookie Cloud] Startup synchronization failed:',
-				 error
+				error
 			);
 
 			this.ready = false;
@@ -294,8 +349,8 @@ const CookieCloud = {
 
 			this.notify(
 				'Cookie Cloud',
-			   'Synchronization failed. Check the console.',
-			   [3, 5]
+				'Synchronization failed. Check the console.',
+				[3, 5]
 			);
 		}
 	},
@@ -343,11 +398,11 @@ const CookieCloud = {
 					this.exists = true;
 
 					this.ui.status =
-					'Connected. Revision ' + this.revision;
+						'Connected. Revision ' + this.revision;
 
 					console.log(
 						'[Cookie Cloud] Uploaded revision',
-				 this.revision
+						this.revision
 					);
 
 				} catch (error) {
@@ -366,8 +421,8 @@ const CookieCloud = {
 
 			this.notify(
 				'Cookie Cloud',
-			   'Upload failed: ' + error.message,
-			   [3, 5]
+				'Upload failed: ' + error.message,
+				[3, 5]
 			);
 
 		} finally {
@@ -494,11 +549,11 @@ const CookieCloud = {
 				dialog.remove();
 
 				this.ui.status =
-				'Connected. Revision ' + this.revision;
+					'Connected. Revision ' + this.revision;
 
 				this.notify(
 					'Cookie Cloud',
-				'Cloud save overwritten successfully!'
+					'Cloud save overwritten successfully!'
 				);
 
 			} catch (error) {
@@ -506,8 +561,8 @@ const CookieCloud = {
 
 				this.notify(
 					'Cookie Cloud',
-				'Could not overwrite cloud save: ' + error.message,
-				[3, 5]
+					'Could not overwrite cloud save: ' + error.message,
+					[3, 5]
 				);
 			}
 		};
@@ -527,11 +582,11 @@ const CookieCloud = {
 				dialog.remove();
 
 				this.ui.status =
-				'Connected. Revision ' + this.revision;
+					'Connected. Revision ' + this.revision;
 
 				this.notify(
 					'Cookie Cloud',
-				'Cloud save loaded successfully!'
+					'Cloud save loaded successfully!'
 				);
 
 			} catch (error) {
@@ -539,8 +594,8 @@ const CookieCloud = {
 
 				this.notify(
 					'Cookie Cloud',
-				'Could not load cloud save: ' + error.message,
-				[3, 5]
+					'Could not load cloud save: ' + error.message,
+					[3, 5]
 				);
 			}
 		};
@@ -570,9 +625,9 @@ const CookieCloud = {
 			ignoreVersionIssues
 		) {
 			const waitingForSteamSave =
-			typeof data === 'undefined' &&
-			typeof App !== 'undefined' &&
-			App;
+				typeof data === 'undefined' &&
+				typeof App !== 'undefined' &&
+				App;
 
 			const result = originalLoadSave.apply(
 				this,
@@ -678,9 +733,9 @@ const CookieCloud = {
 			);
 
 			server.value =
-			CookieCloud.api
-			? CookieCloud.api.replace(/\/api\/cookie$/, '')
-			: '';
+				CookieCloud.api
+				? CookieCloud.api.replace(/\/api\/cookie$/, '')
+				: '';
 
 			token.value = CookieCloud.token || '';
 
@@ -698,16 +753,16 @@ const CookieCloud = {
 					);
 
 					status.textContent =
-					CookieCloud.ui.status;
+						CookieCloud.ui.status;
 
 				} catch (error) {
 					console.error(
 						'[Cookie Cloud] Connection failed:',
-				   error
+						error
 					);
 
 					status.textContent =
-					'Connection failed: ' + error.message;
+						'Connection failed: ' + error.message;
 				}
 			};
 
@@ -717,7 +772,7 @@ const CookieCloud = {
 				CookieCloud.disconnect();
 
 				status.textContent =
-				CookieCloud.ui.status;
+					CookieCloud.ui.status;
 
 				token.value = '';
 			};
