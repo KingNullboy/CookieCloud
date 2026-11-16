@@ -1,3 +1,4 @@
+
 // can i has a cookie
 require('dotenv').config();
 
@@ -18,6 +19,10 @@ const TOKEN_SCOPES = [
     'save:write',
     'save:delete'
 ];
+
+// Storage format identifiers
+const BASE64_MAGIC = Buffer.from('CCB1');
+const TEXT_MAGIC = Buffer.from('CCT1');
 
 if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is required');
@@ -100,6 +105,190 @@ function validUsername(username) {
     return typeof username === 'string' &&
         username.trim().length > 0 &&
         username.trim().length <= 80;
+}
+
+// --------------------------------------------------
+// Save encoding
+// --------------------------------------------------
+
+// Detect Base64 saves and extract their binary payload.
+//
+// Cookie Clicker saves can end in !END!.
+// This marker is preserved separately.
+
+function decodeBase64Save(saveData) {
+    let data = saveData;
+    const hasEnd = data.endsWith('!END!');
+
+    if (hasEnd) {
+        data = data.slice(0, -5);
+    }
+
+    // Detect the Base64 alphabet.
+    const urlSafe = /[-_]/.test(data);
+
+    if (urlSafe && /[+/]/.test(data)) {
+        return null;
+    }
+
+    const paddingMatch = data.match(/=*$/);
+    const padding = paddingMatch[0].length;
+
+    if (padding > 2) {
+        return null;
+    }
+
+    const base64 = data.slice(0, data.length - padding);
+
+    if (
+        !/^[A-Za-z0-9]*$/.test(
+            base64.replace(urlSafe ? /[-_]/g : /[+/]/g, '')
+        ) ||
+        (urlSafe && !/^[A-Za-z0-9_-]*$/.test(data)) ||
+        (!urlSafe && !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) ||
+        base64.length % 4 === 1
+    ) {
+        return null;
+    }
+
+    // Explicit padding must be valid.
+    const expectedPadding = (4 - base64.length % 4) % 4;
+
+    if (padding !== 0 && padding !== expectedPadding) {
+        return null;
+    }
+
+    const normalized = data
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+
+    const decoded = Buffer.from(normalized, 'base64');
+
+    // Reject non-canonical Base64.
+    const canonical = decoded.toString('base64').replace(/=+$/, '');
+
+    if (canonical !== base64.replace(/-/g, '+').replace(/_/g, '/')) {
+        return null;
+    }
+
+    return {
+        buffer: decoded,
+        hasEnd,
+        urlSafe,
+        padding
+    };
+}
+
+// --------------------------------------------------
+// Save storage
+// --------------------------------------------------
+
+async function encodeStoredSave(saveData) {
+    const decoded = decodeBase64Save(saveData);
+
+    if (decoded) {
+        // Flags:
+        // Bit 0: !END! suffix
+        // Bit 1: Base64URL alphabet
+        // Bits 2-3: original padding count
+
+        const flags =
+            (decoded.hasEnd ? 1 : 0) |
+            (decoded.urlSafe ? 2 : 0) |
+            (decoded.padding << 2);
+
+        const compressed = await compressSave(decoded.buffer);
+
+        return Buffer.concat([
+            BASE64_MAGIC,
+            Buffer.from([flags]),
+            compressed
+        ]);
+    }
+
+    // Non-Base64 fallback.
+    // Also gives us a way to store arbitrary future save formats.
+
+    const compressed = await compressSave(
+        Buffer.from(saveData, 'utf8')
+    );
+
+    return Buffer.concat([
+        TEXT_MAGIC,
+        compressed
+    ]);
+}
+
+async function decodeStoredSave(stored) {
+    // New Base64 storage format.
+    if (stored.subarray(0, 4).equals(BASE64_MAGIC)) {
+        const flags = stored[4];
+
+        if (
+            stored.length < 6 ||
+            (flags & 0xF0) !== 0
+        ) {
+            throw new Error('Invalid Base64 save header');
+        }
+
+        const decompressed = await decompressSave(
+            stored.subarray(5)
+        );
+
+        if (decompressed.length > MAX_SAVE_SIZE) {
+            throw new Error('Decompressed save exceeds size limit');
+        }
+
+        let saveData = decompressed.toString('base64');
+
+        // Restore original Base64 representation.
+        saveData = saveData.replace(/=+$/, '');
+
+        if (flags & 2) {
+            saveData = saveData
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_');
+        }
+
+        const padding = (flags >> 2) & 3;
+
+        if (padding > 2) {
+            throw new Error('Invalid Base64 padding metadata');
+        }
+
+        saveData += '='.repeat(padding);
+
+        if (flags & 1) {
+            saveData += '!END!';
+        }
+
+        return Buffer.from(saveData, 'utf8');
+    }
+
+    // New plain-text storage format.
+    if (stored.subarray(0, 4).equals(TEXT_MAGIC)) {
+        const decompressed = await decompressSave(
+            stored.subarray(4)
+        );
+
+        if (decompressed.length > MAX_SAVE_SIZE) {
+            throw new Error('Decompressed save exceeds size limit');
+        }
+
+        return decompressed;
+    }
+
+    // Legacy format:
+    // Previous versions compressed the original UTF-8 save string
+    // directly, without a storage header.
+
+    const decompressed = await decompressSave(stored);
+
+    if (decompressed.length > MAX_SAVE_SIZE) {
+        throw new Error('Decompressed save exceeds size limit');
+    }
+
+    return decompressed;
 }
 
 // --------------------------------------------------
@@ -301,11 +490,7 @@ app.get(
                 });
             }
 
-            const decompressed = await decompressSave(save.save_data);
-
-            if (decompressed.length > MAX_SAVE_SIZE) {
-                throw new Error('Decompressed save exceeds size limit');
-            }
+            const decompressed = await decodeStoredSave(save.save_data);
 
             const actualHash = crypto
                 .createHash('sha256')
@@ -366,12 +551,14 @@ app.put(
                 });
             }
 
+            // Hash the original save string, NOT its decoded contents.
             const saveHash = crypto
                 .createHash('sha256')
                 .update(buffer)
                 .digest('hex');
 
-            const compressed = await compressSave(buffer);
+            // Decode Base64 and compress the actual save payload.
+            const compressed = await encodeStoredSave(saveData);
 
             const result = await db.query(
                 `WITH updated AS (
